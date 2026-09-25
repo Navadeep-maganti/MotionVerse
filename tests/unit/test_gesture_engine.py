@@ -23,7 +23,12 @@ def baseline():
 
 @pytest.fixture
 def engine():
-    thresholds = BodyGestureThresholds(move_left_threshold=0.18, move_right_threshold=0.18)
+    thresholds = BodyGestureThresholds(
+        move_left_trigger=0.18,
+        move_left_release=0.10,
+        move_right_trigger=0.18,
+        move_right_release=0.10
+    )
     return BodyGestureEngine(thresholds)
 
 
@@ -161,5 +166,58 @@ def test_crouch_fails_standing_neutral(engine, baseline):
     )
     result = engine.process(features, baseline=baseline)
     assert result.action == Action.NONE
+
+
+def test_hysteresis_horizontal_trigger_and_release(baseline):
+    """Test horizontal dual-threshold Schmitt trigger hysteresis."""
+    thresholds = BodyGestureThresholds(
+        move_right_trigger=0.20,
+        move_right_release=0.12
+    )
+    engine = BodyGestureEngine(thresholds, enable_temporal_filtering=False)
+
+    # 1. Start in neutral: X = 0.15 (below trigger 0.20) -> NONE
+    f1 = BodyFeatures(normalized_x=0.15, is_valid=True)
+    assert engine.process(f1, baseline=baseline).action == Action.NONE
+
+    # 2. Cross trigger threshold: X = 0.22 -> MOVE_RIGHT
+    f2 = BodyFeatures(normalized_x=0.22, is_valid=True)
+    assert engine.process(f2, baseline=baseline).action == Action.MOVE_RIGHT
+
+    # 3. Drift back into hysteresis band: X = 0.16 (above release 0.12) -> STAYS MOVE_RIGHT!
+    f3 = BodyFeatures(normalized_x=0.16, is_valid=True)
+    assert engine.process(f3, baseline=baseline).action == Action.MOVE_RIGHT
+
+    # 4. Fall below release threshold: X = 0.10 (< 0.12) -> Deactivates to NONE
+    f4 = BodyFeatures(normalized_x=0.10, is_valid=True)
+    assert engine.process(f4, baseline=baseline).action == Action.NONE
+
+
+def test_hysteresis_crouch_trigger_and_release(baseline):
+    """Test crouch dual-threshold hysteresis."""
+    thresholds = BodyGestureThresholds(
+        crouch_trigger_ratio=0.76,
+        crouch_release_ratio=0.84,
+        crouch_trigger_disp=-0.09,
+        crouch_release_disp=-0.04
+    )
+    engine = BodyGestureEngine(thresholds, enable_temporal_filtering=False)
+
+    # 1. Neutral standing: ratio = 0.80 (above trigger 0.76) -> NONE
+    f1 = BodyFeatures(body_height_ratio=0.80, normalized_y_displacement=-0.02, is_valid=True)
+    assert engine.process(f1, baseline=baseline).action == Action.NONE
+
+    # 2. Deep crouch: ratio = 0.74 (<= 0.76) -> CROUCH
+    f2 = BodyFeatures(body_height_ratio=0.74, normalized_y_displacement=-0.10, is_valid=True)
+    assert engine.process(f2, baseline=baseline).action == Action.CROUCH
+
+    # 3. Rising slightly: ratio = 0.80, disp = -0.06 -> STAYS CROUCH!
+    f3 = BodyFeatures(body_height_ratio=0.80, normalized_y_displacement=-0.06, is_valid=True)
+    assert engine.process(f3, baseline=baseline).action == Action.CROUCH
+
+    # 4. Fully standing up: ratio = 0.88 (>= 0.84), disp = 0.00 -> Deactivates to NONE
+    f4 = BodyFeatures(body_height_ratio=0.88, normalized_y_displacement=0.00, is_valid=True)
+    assert engine.process(f4, baseline=baseline).action == Action.NONE
+
 
 

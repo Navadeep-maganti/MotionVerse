@@ -1,0 +1,3 @@
+"""
+Logger module for MotionVerse.
+"""

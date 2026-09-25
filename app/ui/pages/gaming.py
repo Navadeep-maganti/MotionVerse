@@ -1,0 +1,3 @@
+"""
+Gaming module for MotionVerse.
+"""

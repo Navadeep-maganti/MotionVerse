@@ -1,5 +1,5 @@
 """
-Configurable rule definitions for body movement detection with dual-threshold hysteresis.
+Configurable rule definitions for body movement detection with dynamic reference and discrete triggers.
 """
 
 from dataclasses import dataclass
@@ -9,53 +9,78 @@ from app.core.gestures.common.actions import Action
 from app.core.vision.pose.pose_features import BodyFeatures
 
 
-@dataclass
 class BodyGestureThresholds:
     """
-    Configurable threshold parameters with separate trigger (activation)
-    and release (deactivation) boundaries for Schmitt-trigger hysteresis.
+    Configurable threshold parameters for discrete gesture triggers and dynamic reference settling.
+    Supports standard naming and common parameter aliases.
     """
-    # Horizontal Movement Hysteresis
-    move_left_trigger: float = 0.20   # Must move left beyond -0.20 to activate
-    move_left_release: float = 0.12   # Must return past -0.12 toward center to deactivate
-    move_right_trigger: float = 0.20  # Must move right beyond +0.20 to activate
-    move_right_release: float = 0.12  # Must return past +0.12 toward center to deactivate
-    min_horizontal_velocity: float = 0.05
+    def __init__(
+        self,
+        move_left_trigger: float = 0.18,
+        move_left_release: float = 0.10,
+        move_right_trigger: float = 0.18,
+        move_right_release: float = 0.10,
+        horizontal_settle_velocity: float = 0.12,
+        horizontal_velocity_settle: Optional[float] = None,
+        horizontal_settle_duration_sec: float = 0.12,
+        jump_displacement_threshold: float = 0.10,
+        jump_trigger_displacement: Optional[float] = None,
+        jump_velocity_threshold: float = 0.60,
+        jump_trigger_velocity: Optional[float] = None,
+        jump_recovery_displacement: float = 0.04,
+        crouch_trigger_ratio: float = 0.76,
+        crouch_trigger_disp: float = -0.09,
+        crouch_recovery_ratio: float = 0.84,
+        crouch_release_ratio: Optional[float] = None,
+        crouch_recovery_disp: float = -0.04,
+        crouch_release_disp: Optional[float] = None,
+    ):
+        self.move_left_trigger = move_left_trigger
+        self.move_left_release = move_left_release
+        self.move_right_trigger = move_right_trigger
+        self.move_right_release = move_right_release
 
-    # Jump Detection (discrete trigger)
-    jump_displacement_threshold: float = 0.10  # 10% of body scale upward displacement
-    jump_velocity_threshold: float = 0.60      # Normalized upward velocity (scales/sec)
+        self.horizontal_settle_velocity = horizontal_velocity_settle if horizontal_velocity_settle is not None else horizontal_settle_velocity
+        self.horizontal_settle_duration_sec = horizontal_settle_duration_sec
 
-    # Crouch Detection Hysteresis
-    crouch_trigger_ratio: float = 0.76         # Must compress height to <= 76% to activate crouch
-    crouch_release_ratio: float = 0.84         # Must stand back up past 84% to release crouch
-    crouch_trigger_disp: float = -0.09         # Downward hip drop to activate
-    crouch_release_disp: float = -0.04         # Hip rise to release
+        self.jump_displacement_threshold = jump_trigger_displacement if jump_trigger_displacement is not None else jump_displacement_threshold
+        self.jump_velocity_threshold = jump_trigger_velocity if jump_trigger_velocity is not None else jump_velocity_threshold
+        self.jump_recovery_displacement = jump_recovery_displacement
 
-    @property
-    def move_left_threshold(self) -> float:
-        return self.move_left_trigger
-
-    @property
-    def move_right_threshold(self) -> float:
-        return self.move_right_trigger
-
-    @property
-    def crouch_ratio_threshold(self) -> float:
-        return self.crouch_trigger_ratio
+        self.crouch_trigger_ratio = crouch_trigger_ratio
+        self.crouch_trigger_disp = crouch_trigger_disp
+        self.crouch_recovery_ratio = crouch_release_ratio if crouch_release_ratio is not None else crouch_recovery_ratio
+        self.crouch_recovery_disp = crouch_release_disp if crouch_release_disp is not None else crouch_recovery_disp
 
 
 class BodyMovementRules:
     """
-    Evaluates kinematic body features against dual-threshold hysteresis bands.
+    Evaluates kinematic body features against discrete trigger and recovery thresholds.
     """
 
     def __init__(self, thresholds: Optional[BodyGestureThresholds] = None):
         self.thresholds = thresholds or BodyGestureThresholds()
 
-    def evaluate_jump(self, features: BodyFeatures) -> bool:
+    def calculate_horizontal_delta(
+        self,
+        features: BodyFeatures,
+        reference_x: float,
+        body_scale: float
+    ) -> float:
         """
-        Evaluate jump condition based on hip upward displacement and velocity.
+        Calculate relative horizontal displacement from dynamic reference:
+        D_x = (H_x,t - X_ref) / B_0
+        """
+        if not features.is_valid or body_scale <= 0.01:
+            return 0.0
+        if features.hip_center_x != 0.0:
+            return (features.hip_center_x - reference_x) / body_scale
+        # Fallback for mock objects where only normalized_x was populated
+        return features.normalized_x
+
+    def evaluate_jump_trigger(self, features: BodyFeatures) -> bool:
+        """
+        Evaluate jump trigger condition (requires displacement + velocity).
         """
         if not features.is_valid:
             return False
@@ -66,18 +91,17 @@ class BodyMovementRules:
         return (disp_y >= self.thresholds.jump_displacement_threshold and
                 vy >= self.thresholds.jump_velocity_threshold)
 
-    def evaluate_crouch_with_hysteresis(
-        self,
-        features: BodyFeatures,
-        is_currently_crouched: bool
-    ) -> bool:
+    def evaluate_jump_recovered(self, features: BodyFeatures) -> bool:
         """
-        Evaluate crouch state with hysteresis to avoid threshold bouncing.
-        
-        - If currently CROUCHED: remains crouched until body expands above crouch_release_ratio
-          AND hip rises above crouch_release_disp.
-        - If NOT crouched: activates only when height compresses <= crouch_trigger_ratio
-          OR downward displacement <= crouch_trigger_disp.
+        Check if user has landed and returned close to neutral height.
+        """
+        if not features.is_valid:
+            return True
+        return features.normalized_y_displacement <= self.thresholds.jump_recovery_displacement
+
+    def evaluate_crouch_trigger(self, features: BodyFeatures) -> bool:
+        """
+        Evaluate crouch trigger condition (height compression or downward hip drop).
         """
         if not features.is_valid:
             return False
@@ -85,58 +109,42 @@ class BodyMovementRules:
         ratio = features.body_height_ratio
         disp_y = features.normalized_y_displacement
 
-        if is_currently_crouched:
-            # Release condition: user has stood back up
-            has_released_ratio = ratio >= self.thresholds.crouch_release_ratio
-            has_released_disp = disp_y >= self.thresholds.crouch_release_disp
-            if has_released_ratio and has_released_disp:
-                return False  # Crouch ended
-            return True  # Retain crouch state
-        else:
-            # Trigger condition: user has crouched down
-            is_height_compressed = ratio <= self.thresholds.crouch_trigger_ratio
-            is_hip_dropped = disp_y <= self.thresholds.crouch_trigger_disp
-            return is_height_compressed or (is_hip_dropped and ratio <= 0.86)
+        is_height_compressed = ratio <= self.thresholds.crouch_trigger_ratio
+        is_hip_dropped = disp_y <= self.thresholds.crouch_trigger_disp
 
-    def evaluate_horizontal_with_hysteresis(
-        self,
-        features: BodyFeatures,
-        current_horizontal_action: Action
-    ) -> Action:
+        return is_height_compressed or (is_hip_dropped and ratio <= 0.86)
+
+    def evaluate_crouch_recovered(self, features: BodyFeatures) -> bool:
         """
-        Evaluate horizontal position with dual-threshold hysteresis.
-        
-        - If currently MOVE_LEFT: stays MOVE_LEFT until X_t > -move_left_release (e.g. > -0.12).
-        - If currently MOVE_RIGHT: stays MOVE_RIGHT until X_t < +move_right_release (e.g. < 0.12).
-        - If currently NONE: requires |X_t| >= trigger (0.20) to engage.
+        Check if user has stood back up to neutral standing posture.
         """
         if not features.is_valid:
-            return Action.NONE
+            return True
 
-        x = features.normalized_x
+        has_height_expanded = features.body_height_ratio >= self.thresholds.crouch_recovery_ratio
+        has_hip_risen = features.normalized_y_displacement >= self.thresholds.crouch_recovery_disp
 
-        if current_horizontal_action == Action.MOVE_LEFT:
-            # Check if user returned past the release threshold
-            if x > -self.thresholds.move_left_release:
-                # Check if user went all the way to the right side
-                if x > self.thresholds.move_right_trigger:
-                    return Action.MOVE_RIGHT
-                return Action.NONE
+        return has_height_expanded and has_hip_risen
+
+    def evaluate_horizontal_trigger(self, delta_x: float) -> Action:
+        """
+        Evaluate horizontal trigger relative to dynamic reference.
+        
+        Returns:
+            Action.MOVE_LEFT if delta_x <= -move_left_trigger
+            Action.MOVE_RIGHT if delta_x >= +move_right_trigger
+            Action.NONE otherwise
+        """
+        if delta_x <= -self.thresholds.move_left_trigger:
             return Action.MOVE_LEFT
-
-        elif current_horizontal_action == Action.MOVE_RIGHT:
-            # Check if user returned past the release threshold
-            if x < self.thresholds.move_right_release:
-                # Check if user went all the way to the left side
-                if x < -self.thresholds.move_left_trigger:
-                    return Action.MOVE_LEFT
-                return Action.NONE
+        elif delta_x >= self.thresholds.move_right_trigger:
             return Action.MOVE_RIGHT
+        return Action.NONE
 
-        else:
-            # Currently NONE: requires trigger threshold to engage
-            if x <= -self.thresholds.move_left_trigger:
-                return Action.MOVE_LEFT
-            elif x >= self.thresholds.move_right_trigger:
-                return Action.MOVE_RIGHT
-            return Action.NONE
+    def is_horizontal_settled(self, features: BodyFeatures) -> bool:
+        """
+        Check if horizontal movement has stabilized (velocity below settle threshold).
+        """
+        if not features.is_valid:
+            return True
+        return abs(features.horizontal_velocity) <= self.thresholds.horizontal_settle_velocity

@@ -32,7 +32,6 @@ def test_gesture_result_action_type():
 
 def test_engine_emits_only_generic_actions():
     """Verify BodyGestureEngine strictly returns valid Action enums for all states."""
-    engine = BodyGestureEngine(enable_temporal_filtering=False)
     baseline = CalibrationBaseline(
         hip_center_x=0.5,
         hip_center_y=0.5,
@@ -43,14 +42,15 @@ def test_engine_emits_only_generic_actions():
 
     # Test cases: (features, expected Action)
     test_cases = [
-        (BodyFeatures(normalized_x=0.0, is_valid=True), Action.NONE),
-        (BodyFeatures(normalized_x=-0.25, is_valid=True), Action.MOVE_LEFT),
-        (BodyFeatures(normalized_x=0.25, is_valid=True), Action.MOVE_RIGHT),
-        (BodyFeatures(normalized_y_displacement=0.15, vertical_velocity=0.9, is_valid=True), Action.JUMP),
-        (BodyFeatures(body_height_ratio=0.70, is_valid=True), Action.CROUCH),
+        (BodyFeatures(hip_center_x=0.5, normalized_x=0.0, is_valid=True), Action.NONE),
+        (BodyFeatures(hip_center_x=0.35, normalized_x=-0.25, is_valid=True), Action.MOVE_LEFT),
+        (BodyFeatures(hip_center_x=0.65, normalized_x=0.25, is_valid=True), Action.MOVE_RIGHT),
+        (BodyFeatures(hip_center_x=0.5, normalized_y_displacement=0.15, vertical_velocity=0.9, is_valid=True), Action.JUMP),
+        (BodyFeatures(hip_center_x=0.5, body_height_ratio=0.70, is_valid=True), Action.CROUCH),
     ]
 
     for feat, expected_action in test_cases:
+        engine = BodyGestureEngine(enable_temporal_filtering=False)
         res = engine.process(feat, baseline=baseline, timestamp=1.0)
         assert isinstance(res.action, Action)
         assert res.action == expected_action

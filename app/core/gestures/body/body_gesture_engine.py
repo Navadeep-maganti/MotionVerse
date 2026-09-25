@@ -2,6 +2,7 @@
 Body Gesture Engine for MotionVerse.
 Implements discrete event semantics:
 - Dynamic Horizontal Reference (relative displacement + settling + re-referencing).
+- Rapid Consecutive Step Tracking with robust double-trigger prevention.
 - Discrete Jump (1 event + landing recovery).
 - Discrete Crouch (1 event + standing recovery).
 Strictly game-independent and emits only one Action event per physical gesture.
@@ -26,9 +27,8 @@ class BodyGestureEngine:
     
     Discrete Semantics:
     - Each physical gesture triggers EXACTLY ONE Action event on the leading edge.
-    - Horizontal movement uses a dynamic reference X_ref. After an event triggers,
-      the engine waits for movement to settle, updates X_ref to the new position,
-      and re-arms for the next movement in ANY direction without requiring return-to-center.
+    - Horizontal movement uses a dynamic reference X_ref.
+    - Robust double-trigger prevention prevents single-stroke overshoot from triggering twice.
     - Vertical gestures (Jump / Crouch) require landing/standing recovery before re-arming.
     """
 
@@ -37,7 +37,8 @@ class BodyGestureEngine:
         thresholds: Optional[BodyGestureThresholds] = None,
         enable_temporal_filtering: bool = True,
         jump_cooldown_sec: float = 0.40,
-        horizontal_settle_duration_sec: Optional[float] = None
+        horizontal_settle_duration_sec: Optional[float] = None,
+        min_consecutive_step_interval_sec: float = 0.22
     ):
         self.thresholds = thresholds or BodyGestureThresholds()
         if horizontal_settle_duration_sec is not None:
@@ -47,12 +48,15 @@ class BodyGestureEngine:
         self.enable_temporal_filtering = enable_temporal_filtering
         self.temporal_filter = FeatureTemporalFilter()
         self.cooldown_tracker = CooldownTracker(default_cooldown_sec=jump_cooldown_sec)
+        self.min_consecutive_step_interval_sec = min_consecutive_step_interval_sec
 
         # Dynamic Horizontal State
         self._horizontal_reference_x: Optional[float] = None
         self._horizontal_state: HorizontalState = HorizontalState.READY
         self._settle_start_time: Optional[float] = None
         self._pending_direction: Action = Action.NONE
+        self._last_trigger_x: Optional[float] = None
+        self._last_trigger_time: float = 0.0
 
         # Vertical State (Jump / Crouch)
         self._vertical_state: VerticalState = VerticalState.READY
@@ -70,6 +74,8 @@ class BodyGestureEngine:
         self._horizontal_state = HorizontalState.READY
         self._settle_start_time = None
         self._pending_direction = Action.NONE
+        self._last_trigger_x = None
+        self._last_trigger_time = 0.0
 
         self._vertical_state = VerticalState.READY
         self._active_vertical_action = Action.NONE
@@ -79,6 +85,7 @@ class BodyGestureEngine:
         self._horizontal_reference_x = ref_x
         self._horizontal_state = HorizontalState.READY
         self._settle_start_time = None
+        self._last_trigger_x = ref_x
 
     def process(
         self,
@@ -116,6 +123,7 @@ class BodyGestureEngine:
         # Initialize horizontal reference to calibrated neutral hip position if not set
         if self._horizontal_reference_x is None:
             self._horizontal_reference_x = baseline.hip_center_x
+            self._last_trigger_x = baseline.hip_center_x
 
         # 1. Apply Temporal Filtering
         if self.enable_temporal_filtering:
@@ -199,6 +207,8 @@ class BodyGestureEngine:
                     self._horizontal_state = HorizontalState.SETTLING
                     self._pending_direction = horiz_trig
                     self._settle_start_time = None
+                    self._last_trigger_x = effective_hip_x
+                    self._last_trigger_time = now
                     normalized_val = delta_x
                     confidence = min(1.0, abs(delta_x) / max(0.01, self.thresholds.move_right_trigger))
 
@@ -206,19 +216,61 @@ class BodyGestureEngine:
                 dispatched_action = Action.NONE
                 dispatched_state = GestureState.SETTLING
 
-                # Check if movement has settled (velocity low)
-                if self.rules.is_horizontal_settled(active_features):
-                    if self._settle_start_time is None:
-                        self._settle_start_time = now
-                    elif (now - self._settle_start_time) >= self.thresholds.horizontal_settle_duration_sec:
-                        # Movement settled -> Update reference to new stabilized position!
+                # Check incremental displacement from last triggered step
+                step_ref_x = self._last_trigger_x if self._last_trigger_x is not None else self._horizontal_reference_x
+                incremental_delta_x = (effective_hip_x - step_ref_x) / baseline.body_scale
+                time_since_last_trigger = now - self._last_trigger_time
+
+                # A. Rapid Consecutive Step Detection (requires >= min_consecutive_step_interval_sec to avoid single-push double firing)
+                if time_since_last_trigger >= self.min_consecutive_step_interval_sec:
+                    if self._pending_direction == Action.MOVE_RIGHT and incremental_delta_x >= (self.thresholds.move_right_trigger + 0.02):
+                        dispatched_action = Action.MOVE_RIGHT
+                        dispatched_state = GestureState.TRIGGERED
+                        self._last_trigger_x = effective_hip_x
+                        self._last_trigger_time = now
                         self._horizontal_reference_x = effective_hip_x
+                        self._settle_start_time = None
+                        normalized_val = incremental_delta_x
+                    elif self._pending_direction == Action.MOVE_LEFT and incremental_delta_x <= -(self.thresholds.move_left_trigger + 0.02):
+                        dispatched_action = Action.MOVE_LEFT
+                        dispatched_state = GestureState.TRIGGERED
+                        self._last_trigger_x = effective_hip_x
+                        self._last_trigger_time = now
+                        self._horizontal_reference_x = effective_hip_x
+                        self._settle_start_time = None
+                        normalized_val = incremental_delta_x
+
+                if dispatched_action == Action.NONE:
+                    # B. Snappy Reversal Detection (user actively moves in the opposite direction)
+                    is_reversal = False
+                    if self._pending_direction == Action.MOVE_RIGHT and active_features.horizontal_velocity < -0.15:
+                        is_reversal = True
+                    elif self._pending_direction == Action.MOVE_LEFT and active_features.horizontal_velocity > 0.15:
+                        is_reversal = True
+
+                    # C. Velocity settling detection
+                    is_settled = self.rules.is_horizontal_settled(active_features)
+
+                    if is_reversal:
+                        # Immediately update reference to current position so counter-gesture triggers without lag
+                        self._horizontal_reference_x = effective_hip_x
+                        self._last_trigger_x = effective_hip_x
                         self._horizontal_state = HorizontalState.READY
                         self._pending_direction = Action.NONE
                         self._settle_start_time = None
-                else:
-                    # Still moving -> Reset settle timer
-                    self._settle_start_time = None
+                    elif is_settled:
+                        if self._settle_start_time is None:
+                            self._settle_start_time = now
+                        elif (now - self._settle_start_time) >= self.thresholds.horizontal_settle_duration_sec:
+                            # Movement settled -> Update reference to new stabilized position!
+                            self._horizontal_reference_x = effective_hip_x
+                            self._last_trigger_x = effective_hip_x
+                            self._horizontal_state = HorizontalState.READY
+                            self._pending_direction = Action.NONE
+                            self._settle_start_time = None
+                    else:
+                        # Still moving in same direction -> Reset settle timer
+                        self._settle_start_time = None
 
         self._processing_latency_ms = (time.perf_counter() - t_start) * 1000.0
 

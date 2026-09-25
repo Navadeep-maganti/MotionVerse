@@ -1,0 +1,13 @@
+{
+    "game_name": "Subway Surfers (Web)",
+    "game_type": "browser",
+    "game_url": "https://poki.com/en/g/subway-surfers",
+    "bindings": {
+        "JUMP": "up",
+        "CROUCH": "down",
+        "MOVE_LEFT": "left",
+        "MOVE_RIGHT": "right"
+    },
+    "key_tap_duration_ms": 35,
+    "description": "Popular 3-lane infinite runner. Controls: Up/Down/Left/Right arrow keys."
+}

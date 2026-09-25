@@ -1,0 +1,13 @@
+{
+    "game_name": "First Browser Game",
+    "game_type": "browser",
+    "game_url": "https://poki.com/en/g/subway-surfers",
+    "bindings": {
+        "JUMP": "space",
+        "CROUCH": "down",
+        "MOVE_LEFT": "left",
+        "MOVE_RIGHT": "right"
+    },
+    "key_tap_duration_ms": 30,
+    "description": "Standard 4-action browser runner with Space Jump and Arrow keys."
+}

@@ -75,8 +75,12 @@ def draw_hud_panel(
 
     # 2. Safety Arming Banner
     if is_armed:
-        arm_text = "● INPUT: ARMED (SENDING REAL KEYSTROKES)"
-        arm_col = (0, 255, 0)   # Bright Green
+        if controller.keyboard.is_available:
+            arm_text = "● INPUT: ARMED (CLICK GAME WINDOW TO PLAY)"
+            arm_col = (0, 255, 0)   # Bright Green
+        else:
+            arm_text = "○ INPUT ERROR: PYAUTOGUI NOT AVAILABLE"
+            arm_col = (0, 0, 255)
     else:
         arm_text = "○ INPUT: DISARMED (Press [a] to ARM)"
         arm_col = (0, 180, 255) # Orange/Yellow
@@ -252,13 +256,17 @@ def run_motionverse_game_controller(
     actual_w, actual_h = camera.get_actual_resolution()
     print(f"[STATUS] Camera Connected (Device [{camera_index}], {actual_w}x{actual_h} @ target 30 FPS).")
     print(f"[STATUS] Mock Input Mode: {mock_input}")
+    if not keyboard.is_available:
+        print(f"[ERROR] Live keyboard input is unavailable: {keyboard.backend_error}")
+        print("[ERROR] Gesture recognition can run, but no game controls will be sent.")
     print("[STATUS] Input is initially DISARMED for safety.")
     print("--------------------------------------------------------------------")
     print("INSTRUCTIONS:")
     print("  1. Open your browser game (e.g. Subway Surfers: https://poki.com/en/g/subway-surfers)")
-    print("  2. Click inside the browser game window so it receives keyboard focus.")
-    print("  3. Stand in view of webcam and press 'c' in MotionVerse window to calibrate.")
-    print("  4. Press 'a' to ARM the controller and start playing!")
+    print("  2. Keep MotionVerse focused; stand in view and press 'c' to calibrate.")
+    print("  3. Press 'a' in MotionVerse to ARM the controller.")
+    print("  4. Click inside the browser game and keep it focused while playing.")
+    print("     (Use Alt+Tab back to MotionVerse before pressing a/c/r/d again.)")
     print("  5. Press 'ESC' or 'q' at any time for Emergency Stop.")
     print("--------------------------------------------------------------------\n")
 
@@ -305,6 +313,11 @@ def run_motionverse_game_controller(
                 is_armed = controller.toggle_arm()
                 state_str = "ARMED (LIVE)" if is_armed else "DISARMED (SAFE)"
                 print(f"\n[SAFETY] Keyboard Input is now: {state_str}")
+                if is_armed:
+                    if keyboard.is_available:
+                        print("[INFO] Now click the browser game and leave it focused while playing.")
+                    else:
+                        print(f"[ERROR] Cannot send game keys: {keyboard.backend_error}")
             elif key == ord('c') or key == 32:  # Calibrate
                 print("\n[INFO] Starting standing calibration (stand still)...")
                 controller.start_calibration()

@@ -110,6 +110,24 @@ The system detects generic actions that are then mapped to specific game inputs:
    pip install -r requirements.txt
    ```
 
+### Browser-game quick start
+
+Run the controller with `python app/main.py`. The active window is the only
+window that receives generated key presses, so use this order:
+
+1. Keep **MotionVerse** focused, press `c`, and stand still until calibration is ready.
+2. While MotionVerse is still focused, press `a` to arm live input.
+3. Click inside the **browser game** and leave it focused while you play.
+
+`a`, `c`, `r`, and `d` only work while MotionVerse is focused. Use Alt+Tab back
+to it when needed, then click back into the game. If the application reports an
+unavailable input backend, install the dependencies using the same Python
+interpreter that launches MotionVerse:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
 ### Configuration
 
 1. Run the application:

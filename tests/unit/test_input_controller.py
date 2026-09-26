@@ -24,6 +24,17 @@ def test_keyboard_controller_mock_tap():
     assert ("press", "space") in recorded_events
 
 
+def test_keyboard_controller_without_live_backend_does_not_fake_dispatch():
+    """Missing real-input support must not be reported as a successful tap."""
+    controller = KeyboardController(mock_mode=False)
+    controller._pyautogui = None
+    controller._backend_error = "PyAutoGUI is unavailable."
+
+    assert controller.is_available is False
+    assert controller.tap("space") is False
+    assert controller.total_dispatches == 0
+
+
 def test_keyboard_controller_key_down_up():
     recorded_events = []
 

@@ -145,7 +145,11 @@ class BodyModeController:
                 if self._is_armed and mapped_key:
                     # Dispatch discrete key tap
                     success = self.keyboard.tap(mapped_key)
-                    dispatch_status = f"SENT: {mapped_key.upper()}" if success else "FAILED"
+                    dispatch_status = (
+                        f"SENT: {mapped_key.upper()}"
+                        if success
+                        else "FAILED (INPUT BACKEND UNAVAILABLE)"
+                    )
                 elif not self._is_armed:
                     dispatch_status = f"BLOCKED (DISARMED): {mapped_key.upper()}"
             else:

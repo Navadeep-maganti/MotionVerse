@@ -44,6 +44,7 @@ class KeyboardController:
 
         # Initialize pyautogui if not in mock mode
         self._pyautogui = None
+        self._backend_error: Optional[str] = None
         if not self.mock_mode:
             try:
                 import pyautogui
@@ -52,8 +53,22 @@ class KeyboardController:
                 pyautogui.FAILSAFE = False
                 self._pyautogui = pyautogui
             except ImportError:
-                # Fallback to mock mode if pyautogui is not available
-                self.mock_mode = True
+                # Do not pretend that real key events are being sent when the
+                # optional backend is missing.
+                self._backend_error = (
+                    "PyAutoGUI is unavailable. Install dependencies with "
+                    "`python -m pip install -r requirements.txt`."
+                )
+
+    @property
+    def is_available(self) -> bool:
+        """Whether this controller can emit the configured kind of input."""
+        return self.mock_mode or self._pyautogui is not None
+
+    @property
+    def backend_error(self) -> Optional[str]:
+        """Reason live input cannot be sent, if any."""
+        return self._backend_error
 
     def tap(self, key: str, duration_ms: Optional[int] = None) -> bool:
         """
@@ -67,6 +82,8 @@ class KeyboardController:
             True if dispatch initiated successfully.
         """
         if not key or not isinstance(key, str):
+            return False
+        if not self.is_available:
             return False
 
         t_start = time.perf_counter()
@@ -121,6 +138,8 @@ class KeyboardController:
         """Press and hold a key down."""
         if not key:
             return False
+        if not self.is_available:
+            return False
         normalized_key = key.lower().strip()
         with self._lock:
             self._active_keys.add(normalized_key)
@@ -138,6 +157,8 @@ class KeyboardController:
     def key_up(self, key: str) -> bool:
         """Release a held key."""
         if not key:
+            return False
+        if not self.is_available:
             return False
         normalized_key = key.lower().strip()
         with self._lock:
